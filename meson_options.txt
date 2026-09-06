@@ -1,0 +1,7 @@
+option(
+  'demo',
+  type: 'feature',
+  value: 'auto',
+  description: 'Build the GTK 3 udpgsosink transmitter demonstration app',
+)
+
