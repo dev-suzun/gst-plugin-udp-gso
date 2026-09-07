@@ -873,9 +873,9 @@ gst_udp_gso_sink_class_init (GstUdpGsoSinkClass *klass)
           "Fall back to sendmmsg when UDP GSO is unsupported", TRUE,
           ready_flags));
   g_object_class_install_property (object_class, PROP_SEND_BUFFER_SIZE,
-      g_param_spec_int ("send-buffer-size", "Socket send buffer size",
-          "Requested SO_SNDBUF in bytes; zero keeps the system default", 0,
-          G_MAXINT, 0, ready_flags));
+      g_param_spec_int ("send-buffer-size", "Send buffer size",
+          "Requested SO_SNDBUF size in bytes; zero keeps the system default",
+          0, G_MAXINT, 0, ready_flags));
 
   g_object_class_install_property (object_class, PROP_GSO_SUPPORTED,
       g_param_spec_boolean ("gso-supported", "GSO supported",
@@ -883,51 +883,54 @@ gst_udp_gso_sink_class_init (GstUdpGsoSinkClass *klass)
           G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
   g_object_class_install_property (object_class, PROP_PACKETS_SENT,
       g_param_spec_uint64 ("packets-sent", "Packets sent",
-          "Successfully submitted UDP datagrams", 0, G_MAXUINT64, 0,
-          G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
+          "Number of successfully transmitted UDP datagrams", 0, G_MAXUINT64,
+          0, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
   g_object_class_install_property (object_class, PROP_BYTES_SENT,
       g_param_spec_uint64 ("bytes-sent", "Bytes sent",
-          "Successfully submitted UDP payload bytes", 0, G_MAXUINT64, 0,
-          G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
+          "Number of successfully transmitted UDP payload bytes", 0,
+          G_MAXUINT64, 0, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
   g_object_class_install_property (object_class, PROP_SYSTEM_CALLS,
       g_param_spec_uint64 ("system-calls", "System calls",
-          "sendmsg and sendmmsg attempts, including EINTR retries", 0,
-          G_MAXUINT64, 0, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
+          "Number of sendmsg or sendmmsg attempts", 0, G_MAXUINT64, 0,
+          G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
   g_object_class_install_property (object_class, PROP_SENDMMSG_BATCHES,
       g_param_spec_uint64 ("sendmmsg-batches", "sendmmsg batches",
-          "sendmmsg system-call attempts", 0, G_MAXUINT64, 0,
+          "Number of sendmmsg submission attempts", 0, G_MAXUINT64, 0,
           G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
   g_object_class_install_property (object_class, PROP_GSO_BATCHES,
       g_param_spec_uint64 ("gso-batches", "GSO batches",
-          "Successful UDP GSO superpackets", 0, G_MAXUINT64, 0,
-          G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
+          "Number of successfully transmitted UDP GSO superpackets", 0,
+          G_MAXUINT64, 0, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
   g_object_class_install_property (object_class, PROP_GSO_SEGMENTS,
       g_param_spec_uint64 ("gso-segments", "GSO segments",
-          "UDP datagrams submitted through successful GSO batches", 0,
+          "Number of UDP datagrams transmitted through UDP GSO", 0,
           G_MAXUINT64, 0, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
   g_object_class_install_property (object_class, PROP_FALLBACK_COUNT,
       g_param_spec_uint64 ("fallback-count", "Fallback count",
-          "GSO operations retried through sendmmsg", 0, G_MAXUINT64, 0,
-          G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
+          "Number of failed GSO operations retried through sendmmsg", 0,
+          G_MAXUINT64, 0, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
 
   gst_element_class_set_static_metadata (element_class,
-      "High-performance UDP sink", "Sink/Network",
+      "UDP GSO sink", "Sink/Network",
       "Sends UDP datagrams using sendmsg, sendmmsg, or Linux UDP GSO",
-      "Diploma project contributors");
+      "gst-plugin-udp-gso contributors");
   gst_element_class_add_static_pad_template (element_class, &sink_template);
 
   base_sink_class->start = GST_DEBUG_FUNCPTR (gst_udp_gso_sink_start);
   base_sink_class->stop = GST_DEBUG_FUNCPTR (gst_udp_gso_sink_stop);
   base_sink_class->render = GST_DEBUG_FUNCPTR (gst_udp_gso_sink_render);
-  base_sink_class->render_list = GST_DEBUG_FUNCPTR (gst_udp_gso_sink_render_list);
+  base_sink_class->render_list =
+      GST_DEBUG_FUNCPTR (gst_udp_gso_sink_render_list);
 
   GST_DEBUG_CATEGORY_INIT (gst_udp_gso_sink_debug, "udpgsosink", 0,
-      "High-performance UDP sink");
+      "Linux UDP GSO sink");
 }
 
 static void
 gst_udp_gso_sink_init (GstUdpGsoSink *self)
 {
+  long configured_iov_max;
+
   self->host = g_strdup (DEFAULT_HOST);
   self->port = DEFAULT_PORT;
   self->io_mode = GST_UDP_GSO_SINK_IO_AUTO;
@@ -936,10 +939,15 @@ gst_udp_gso_sink_init (GstUdpGsoSink *self)
   self->gso_max_segments = DEFAULT_GSO_MAX_SEGMENTS;
   self->fallback = TRUE;
   self->send_buffer_size = 0;
+
   self->fd = -1;
-  self->iov_max = sysconf (_SC_IOV_MAX);
-  if (self->iov_max <= 0)
-    self->iov_max = 1024;
+  g_atomic_int_set (&self->gso_supported, FALSE);
+  self->gso_warning_emitted = FALSE;
+
+  configured_iov_max = sysconf (_SC_IOV_MAX);
+  self->iov_max = configured_iov_max > 0 ? configured_iov_max : 1024;
+
   g_mutex_init (&self->stats_lock);
+  memset (&self->stats, 0, sizeof (self->stats));
 }
 

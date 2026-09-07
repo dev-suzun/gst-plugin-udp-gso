@@ -22,7 +22,7 @@ GST_PLUGIN_DEFINE (
     "Linux high-performance UDP sink with UDP GSO",
     plugin_init,
     "0.1.0",
-    "LGPL",
+    "BSD",
     "gst-plugin-udp-gso",
     "https://gstreamer.freedesktop.org/")
 

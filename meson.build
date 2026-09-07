@@ -2,7 +2,7 @@ project(
   'gst-plugin-udp-gso',
   'c',
   version: '0.1.0',
-  license: 'LGPL-2.1-or-later',
+  license: 'BSD-3-Clause',
   meson_version: '>= 0.61',
   default_options: ['c_std=gnu11', 'warning_level=3'],
 )
