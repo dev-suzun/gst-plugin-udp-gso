@@ -19,9 +19,9 @@ GST_PLUGIN_DEFINE (
     GST_VERSION_MAJOR,
     GST_VERSION_MINOR,
     udpgso,
-    "Linux high-performance UDP sink with UDP GSO",
+    "Linux high-performance UDP sink with batching, GSO, and packet pacing",
     plugin_init,
-    "0.1.0",
+    "0.2.0",
     "BSD",
     "gst-plugin-udp-gso",
     "https://gstreamer.freedesktop.org/")
