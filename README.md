@@ -1,13 +1,18 @@
+<!-- SPDX-License-Identifier: BSD-3-Clause -->
+
 # gst-plugin-udp-gso
 
 `gst-plugin-udp-gso` is an experimental Linux-only GStreamer project for
 evaluating high-performance UDP transmission. It provides the custom
 `udpgsosink` element and a GTK 3 video-transmitter demonstration application.
 
-The project is currently at version **0.1.0**. It is a working, benchmarkable
-foundation for the thesis topic *Development of a high-performance UDP
-multimedia plugin for GStreamer*. Kernel packet pacing is part of the planned
-next milestone; it is not implemented in this version.
+The project is currently at version **0.2.0**. It is a working, benchmarkable
+implementation for the thesis topic *Development of a high-performance UDP
+multimedia plugin for GStreamer*. Version 0.2 adds bounded aggregation of
+ordinary input buffers, kernel/userspace packet pacing, RTP-aware batch
+boundaries, a loopback integration test, and a comparison benchmark.
+The detailed engineering gates are documented in
+[`docs/implementation-plan.md`](docs/implementation-plan.md).
 
 ## Current status
 
@@ -17,30 +22,41 @@ next milestone; it is not implemented in this version.
 | Platform | Linux; x86-64 is the primary test target |
 | Destination | One connected IPv4 or IPv6 UDP destination per element |
 | I/O backends | `sendmsg`, `sendmmsg`, Linux `UDP_SEGMENT`, and `auto` |
-| Input contract | One `GstBuffer` is one UDP datagram; one `GstBufferList` contains multiple datagrams |
+| Input contract | One `GstBuffer` is always one UDP datagram; aggregation changes submission count, never datagram boundaries |
+| Aggregation | Bounded worker queue with size, delay, RTP-boundary, EOS, and flush triggers |
+| Pacing | `SO_TXTIME`/`SCM_TXTIME` or interruptible userspace pacing at a target wire rate |
+| Backpressure | Block producer, drop newest, or report an error |
 | Demo inputs | H.264/H.265 video in an MP4 file; raw or MJPEG USB camera video |
 | Demo output | RTP/H.264 or RTP/H.265 over UDP, payload type 96, MTU 1200 |
-| Test coverage | Pure-C batch-layout tests and a Linux kernel UDP GSO loopback test |
+| Test coverage | Pure scheduling/batch tests, kernel GSO and TXTIME tests, and a GStreamer loopback test |
 | License | BSD-3-Clause |
 
 The sink preserves datagram boundaries. It never splits a single
 `GstBuffer`, because an arbitrary encoded buffer is not necessarily a set of
-independent UDP packets. UDP GSO is used only for a consecutive equal-size run
-inside a `GstBufferList`, where every list member already represents one
-datagram.
+independent UDP packets. UDP GSO is used only for consecutive equal-size input
+buffers. The worker combines their memory for one kernel submission while
+preserving each buffer as an independent UDP datagram on the wire.
 
 ## Implemented features
 
 - scatter/gather transmission of separate `GstMemory` blocks without first
   concatenating them;
 - one-datagram `sendmsg()` baseline;
-- bounded `sendmmsg()` submission for `GstBufferList` input;
+- bounded asynchronous accumulation for ordinary `GstBuffer` and
+  `GstBufferList` input;
+- configurable queue limit, batch delay, and backpressure policy;
+- RTP fixed-header validation, frame-aware batch boundaries, sequence-gap
+  detection, and counters;
+- bounded `sendmmsg()` submission, including partial-call handling;
 - Linux UDP GSO with `UDP_SEGMENT` for compatible equal-size datagrams;
 - automatic fallback from feature-related GSO failures to `sendmmsg()`;
 - automatic GSO capability probing when the socket starts;
-- configurable batching, GSO run sizes, fallback, and socket send-buffer size;
+- per-packet rate scheduling using `SO_TXTIME`/`SCM_TXTIME` with
+  `CLOCK_MONOTONIC`;
+- interruptible userspace pacing and automatic TXTIME fallback;
+- late-packet send/drop policy and a bounded future scheduling horizon;
 - thread-safe read-only counters for packets, bytes, system calls, batches,
-  segments, and fallbacks;
+  queue state, drops, lateness, RTP state, and fallbacks;
 - a GTK 3 sender supporting MP4 files and USB cameras;
 - H.264/H.265 RTP payloading for MP4 input and low-latency H.264 encoding for
   camera input.
@@ -53,8 +69,9 @@ flowchart TD
   Camera["USB camera"] --> Encode["V4L2 + x264enc"]
   Demux --> RTP["RTP payloader"]
   Encode --> RTP
-  RTP --> Sink["udpgsosink"]
-  Sink --> Receiver["UDP/RTP receiver"]
+  RTP --> Queue["Bounded RTP-aware queue"]
+  Queue --> Backend["GSO, sendmmsg, or pacing"]
+  Backend --> Receiver["UDP/RTP receiver"]
 ```
 
 MP4 input is demultiplexed and payloaded without decoding or re-encoding. The
@@ -64,8 +81,9 @@ current application is video-only; MP4 audio tracks are ignored.
 ## Requirements
 
 - Linux with `sendmmsg()` support;
-- Linux 4.18 or later to exercise `UDP_SEGMENT`;
-- GStreamer and GStreamer Base development packages 1.20 or later;
+- Linux 4.18 or later to exercise `UDP_SEGMENT` and Linux 4.20 or later for
+  `SO_TXTIME`;
+- GStreamer Core, Base, and App development packages 1.20 or later;
 - GCC or Clang, Meson 0.61 or later, Ninja, and `pkg-config`;
 - GTK 3.22 or later for the optional GUI;
 - GStreamer Good, Bad, Ugly, and libav plugin sets for all demo paths.
@@ -107,9 +125,16 @@ The test suite contains:
 
 - `batch-layout`: verifies equal-size GSO run selection, limits, singleton
   handling, zero-length entries, and invalid input;
+- `schedule`: verifies integer pacing intervals, rounding, lead time, schedule
+  reset, and RTP frame-boundary decisions;
 - `kernel-gso`: sends eight 1200-byte segments through `UDP_SEGMENT` on
   loopback and verifies that eight independent datagrams arrive. It is skipped
-  when the running kernel does not support UDP GSO.
+  when the running kernel does not support UDP GSO;
+- `kernel-txtime`: verifies the `SO_TXTIME`/`SCM_TXTIME` userspace ABI and is
+  skipped when the active kernel or queueing setup cannot accept it;
+- `sink-loopback`: pushes individual RTP-like buffers through `appsrc`, waits
+  for sink-side EOS draining, receives every datagram, and checks transport and
+  RTP counters.
 
 Inspect the uninstalled element from the project root:
 
@@ -141,7 +166,9 @@ GST_PLUGIN_PATH="$PWD/build/src" gst-launch-1.0 -v \
       key-int-max=30 bframes=0 byte-stream=true \
   ! h264parse \
   ! rtph264pay pt=96 mtu=1200 config-interval=-1 \
-  ! udpgsosink host=127.0.0.1 port=5004 io-mode=auto sync=true
+  ! udpgsosink host=127.0.0.1 port=5004 io-mode=auto \
+      aggregation-mode=bounded batch-size=32 max-batch-delay-us=1000 \
+      rtp-aware=true sync=true
 ```
 
 Seeing the moving test pattern confirms capture/generation, encoding, RTP
@@ -151,9 +178,9 @@ not transport the sender pipeline's GStreamer EOS event, so stop the receiver
 with `Ctrl+C`.
 
 This is a functional media test, not by itself proof that GSO was exercised.
-Most RTP payloaders push individual `GstBuffer` objects, and a single buffer
-always uses the safe one-datagram `sendmsg()` path. Check `gso-batches` during a
-list-producing test before claiming GSO use.
+Version 0.2 can aggregate the individual buffers normally produced by RTP
+payloaders. Check `gso-batches`, `gso-segments`, and packets per call while the
+pipeline is running before making a GSO performance claim.
 
 ## GUI demonstration application
 
@@ -172,11 +199,15 @@ The GUI provides:
 - input selection between MP4 file and USB camera;
 - destination host and port;
 - `auto`, `sendmsg`, `sendmmsg`, and `gso` modes;
-- batch size and GSO fallback controls;
+- bounded/synchronous aggregation, batch delay, queue size, and backpressure;
+- disabled, automatic, kernel, or userspace pacing with rate, lead time,
+  scheduling horizon, and late-packet policy;
+- RTP-aware batching and safe-fallback controls;
 - start and stop controls;
 - stream status and MP4 progress;
 - live packets, payload bytes, network calls, packets per call, payload rate,
-  GSO support, successful GSO batches, and fallback count.
+  GSO/TXTIME support, queue depth/high watermark, drops, lateness, RTP sequence
+  gaps, successful batches, and fallback counts.
 
 ### Supported input paths
 
@@ -253,16 +284,30 @@ All writable custom properties are mutable while the element is in `NULL` or
 | `batch-size` | 1-1024 | `32` | Maximum datagrams in one `sendmmsg()` call |
 | `gso-min-segments` | 2-64 | `4` | Minimum equal-size run used for GSO |
 | `gso-max-segments` | 2-64 | `32` | Maximum datagrams in one GSO superpacket |
-| `fallback` | Boolean | `true` | Retry feature-related GSO failures with `sendmmsg()` |
+| `fallback` | Boolean | `true` | Enable GSO-to-`sendmmsg` and TXTIME-to-userspace fallbacks |
 | `send-buffer-size` | 0-2147483647 bytes | `0` | Requested `SO_SNDBUF`; zero keeps the system default |
+| `aggregation-mode` | `none`, `bounded` | `bounded` | Synchronous submission or bounded worker aggregation |
+| `max-queue-packets` | 1-65536 | `256` | Maximum waiting datagrams |
+| `max-batch-delay-us` | 0-1000000 | `1000` | Oldest-packet delay before a partial batch is sent |
+| `backpressure` | `block`, `drop-newest`, `error` | `block` | Full-queue behavior |
+| `pacing-mode` | `none`, `auto`, `txtime`, `userspace` | `none` | Packet timing backend |
+| `pacing-rate` | 0 to 2^64-1 bit/s | `50000000` | Target rate including configured per-packet overhead |
+| `pacing-lead-time-us` | 0-1000000 | `2000` | Minimum scheduling lead time |
+| `max-pacing-horizon-us` | 0-10000000 | `100000` | Maximum future kernel schedule before worker backpressure; zero is unlimited |
+| `wire-overhead-bytes` | 0-512 | `42` | Per-datagram overhead used by the rate calculation |
+| `late-packet-policy` | `send`, `drop` | `send` | Reschedule or discard application-late packets |
+| `rtp-aware` | Boolean | `false` | Validate RTP, preserve frame batch boundaries, and collect RTP counters |
 
-`gso-min-segments` must not exceed `gso-max-segments`.
+`gso-min-segments` must not exceed `gso-max-segments`. `pacing-rate` must be
+non-zero whenever pacing is enabled.
 
 Read-only statistics:
 
 | Property | Meaning |
 |---|---|
 | `gso-supported` | Whether `UDP_SEGMENT` was available on the active socket |
+| `txtime-supported` | Whether `SO_TXTIME` was accepted on the active socket |
+| `queued-packets` | Datagrams currently waiting in the application queue |
 | `packets-sent` | Successfully transmitted UDP datagrams |
 | `bytes-sent` | Successfully transmitted UDP payload bytes |
 | `system-calls` | `sendmsg()`/`sendmmsg()` attempts, including interrupted attempts |
@@ -270,6 +315,14 @@ Read-only statistics:
 | `gso-batches` | Successfully submitted GSO superpackets |
 | `gso-segments` | Datagrams carried through successful GSO submissions |
 | `fallback-count` | Failed GSO operations retried through `sendmmsg()` |
+| `dropped-packets` | Queue-policy and application-late drops |
+| `late-packets` | Datagrams whose calculated time had passed before submission |
+| `queue-high-watermark` | Largest observed waiting-queue depth |
+| `pacing-fallbacks` | Transitions from TXTIME to userspace pacing |
+| `rtp-packets` | Datagrams with a validated RTP fixed header |
+| `rtp-invalid-packets` | Datagrams that fail basic RTP header validation |
+| `rtp-sequence-gaps` | Observed RTP sequence-number discontinuities |
+| `rtp-frame-boundaries` | Marker/timestamp frame boundaries observed |
 
 ## Backend behavior
 
@@ -278,18 +331,56 @@ Read-only statistics:
   an `iovec` array, avoiding a concatenation copy.
 
 `sendmmsg`
-: Sends `GstBufferList` members in bounded batches and handles interrupted or
-  partially completed calls. A single `GstBuffer` still uses `sendmsg()`.
+: Sends accumulated `GstBuffer` objects and `GstBufferList` members in bounded
+  batches and handles interrupted or partially completed calls.
 
 `gso`
-: Groups consecutive, equal-size list members within the configured limits and
+: Groups consecutive, equal-size buffers within the configured limits and
   submits the combined payload with a `UDP_SEGMENT` control message. Runs that
   are too short, unequal-size tails, oversized segments, and vector-limit
   conflicts use `sendmmsg()`. Feature-related failures can also fall back.
 
 `auto`
 : Uses the GSO grouping policy when the active socket supports `UDP_SEGMENT`;
-  otherwise it uses `sendmmsg()` for lists. Single buffers use `sendmsg()`.
+  otherwise it uses `sendmmsg()`.
+
+`aggregation-mode=bounded`
+: A worker collects individual buffers until `batch-size`, an RTP frame
+  boundary, `max-batch-delay-us`, EOS, or flush. The queue is capped by
+  `max-queue-packets`. `aggregation-mode=none` is the synchronous comparison
+  path.
+
+`pacing-mode=auto|txtime|userspace`
+: Calculates a transmission time for every packet using its payload size,
+  configured overhead, and `pacing-rate`. Per-packet pacing uses `sendmmsg()`
+  rather than GSO, because every datagram needs a distinct timestamp. `auto`
+  first enables `SO_TXTIME`; `userspace` uses an interruptible monotonic wait.
+
+## Kernel pacing setup
+
+The sink uses `CLOCK_MONOTONIC` for both `SO_TXTIME` and `SCM_TXTIME`. For the
+kernel to dequeue packets at those times, configure a compatible ETF queueing
+discipline with the same clock. A simple software-only setup to evaluate on a
+dedicated test interface is:
+
+```bash
+sudo tc qdisc replace dev INTERFACE root etf \
+  clockid CLOCK_MONOTONIC delta 200000
+tc qdisc show dev INTERFACE
+```
+
+Replace `INTERFACE` with the sender NIC. Production multi-queue and hardware
+offload configurations normally place ETF below `mqprio`; follow the NIC and
+[`tc-etf`](https://man7.org/linux/man-pages/man8/tc-etf.8.html) documentation.
+Restore the host's normal queue discipline after the experiment, for example
+with `sudo tc qdisc replace dev INTERFACE root fq_codel` when that is the
+system's intended default.
+
+`txtime-supported=true` proves that the socket option was accepted; it does not
+prove that ETF or NIC launch-time offload is active. Verify pacing from an
+egress capture or hardware timestamp measurements. ETF drops timestamps that
+are already in the past, so keep `pacing-lead-time-us` comfortably above the
+sender's scheduling jitter and the ETF `delta`.
 
 ## Testing and measurement guidance
 
@@ -311,10 +402,12 @@ and asymmetric capacity.
 Compare at least these cases:
 
 - standard GStreamer `udpsink` baseline;
-- `udpgsosink io-mode=sendmsg`;
-- `udpgsosink io-mode=sendmmsg` with real `GstBufferList` input;
-- `udpgsosink io-mode=gso` with compatible equal-size list input;
-- `udpgsosink io-mode=auto` with and without kernel GSO support.
+- `udpgsosink io-mode=sendmsg aggregation-mode=none` synchronous baseline;
+- bounded `sendmsg` to isolate queue/thread overhead;
+- bounded `sendmmsg` to measure syscall batching;
+- bounded `gso` with compatible equal-size buffers;
+- `pacing-mode=userspace` and `pacing-mode=txtime` at the same rate;
+- `io-mode=auto` and `pacing-mode=auto` fallback cases.
 
 Record packets/s, payload Mbit/s, CPU utilization, cycles per packet, network
 system calls, packets per call, packet loss, latency percentiles, inter-packet
@@ -323,51 +416,95 @@ scatter/gather and batching techniques, so performance claims should isolate
 the additional benefit of carrying multiple datagrams through the kernel as a
 UDP GSO superpacket.
 
+Start a discard receiver on the target machine:
+
+```bash
+gst-launch-1.0 -q udpsrc port=5004 ! fakesink sync=false
+```
+
+Then run equivalent benchmark cases from the sender:
+
+```bash
+GST_PLUGIN_PATH="$PWD/build/src" ./build/bench/udpgso-benchmark \
+  --sink=udpsink --host=RECEIVER --port=5004
+
+GST_PLUGIN_PATH="$PWD/build/src" ./build/bench/udpgso-benchmark \
+  --sink=udpgsosink --host=RECEIVER --port=5004 \
+  --io-mode=sendmsg --aggregation-mode=none
+
+GST_PLUGIN_PATH="$PWD/build/src" ./build/bench/udpgso-benchmark \
+  --sink=udpgsosink --host=RECEIVER --port=5004 \
+  --io-mode=gso --aggregation-mode=bounded --batch-size=32
+
+GST_PLUGIN_PATH="$PWD/build/src" ./build/bench/udpgso-benchmark \
+  --sink=udpgsosink --host=RECEIVER --port=5004 \
+  --io-mode=sendmmsg --pacing-mode=auto --pacing-rate=50000000
+```
+
+The benchmark defaults to 100000 datagrams of 1200 bytes. Repeat each case,
+discard warm-up runs, pin CPU affinity when possible, and record sender and
+receiver CPU separately. The program's elapsed rate measures application
+completion; packet loss and on-wire timing must be measured at the receiver or
+from a capture.
+
 ## Current limitations
 
 - one destination per element;
 - connected blocking UDP socket;
 - no multicast-specific options;
 - no externally supplied socket;
-- no internal accumulation of individual buffers into `GstBufferList`;
-- no `SO_TXTIME`/`SCM_TXTIME` kernel pacing;
-- no RTP-aware pacing or burst control;
 - no retransmission, forward-error correction, encryption, or congestion
   control;
 - no receiver element or receiver GUI;
 - no application-level EOS/control channel between sender and receiver;
 - the demo is video-only and accepts only H.264/H.265 video from MP4 files;
 - camera capture currently uses software conversion and `x264enc`, not a
-  platform-specific hardware encoder or DMA-BUF zero-copy path.
+  platform-specific hardware encoder or DMA-BUF zero-copy path;
+- TXTIME error-queue reporting and kernel/NIC drop counters are not yet
+  consumed by the element;
+- the basic RTP parser collects fixed-header metadata but does not authenticate
+  packets or interpret RTP header extensions.
 
 ## Planned next milestones
 
-1. Add a bounded transmission queue that can form lists without unbounded
-   latency.
-2. Add `SO_TXTIME`/`SCM_TXTIME` as an independent packet-pacing mode.
-3. Add RTP-aware scheduling and microburst control.
-4. Add an end-to-end list-producing integration test for each backend.
-5. Benchmark against standard GStreamer UDP elements on two physical machines.
-6. Consider a small control channel so the demonstration receiver can react to
-   sender EOS without changing the media datagrams.
+1. Run the complete benchmark matrix on the two physical 1 GbE machines.
+2. Measure p50/p99/p99.9 latency, inter-packet gaps, loss, CPU cycles, and
+   syscall counts under controlled `tc netem` and queue limits.
+3. Add TXTIME error-queue collection if kernel-side late-drop visibility is
+   required by the evaluation.
+4. Evaluate hardware encoding and DMA-BUF paths independently from the encoded
+   UDP transport.
+5. Consider a small control channel so a demonstration receiver can react to
+   sender EOS without changing media datagrams.
 
 ## Project layout
 
 ```text
 .
+├── .github/workflows/ci.yml
+├── bench/
+│   ├── meson.build
+│   └── udpgso-benchmark.c
 ├── demo/
 │   ├── meson.build
 │   └── udpgso-demo.c
+├── docs/
+│   └── implementation-plan.md
 ├── src/
 │   ├── gstudpgsoplugin.c
 │   ├── gstudpgsosink.c
 │   ├── gstudpgsosink.h
 │   ├── udpgsobatch.c
-│   └── udpgsobatch.h
+│   ├── udpgsobatch.h
+│   ├── udpgsoschedule.c
+│   └── udpgsoschedule.h
 ├── tests/
 │   ├── meson.build
 │   ├── test_batch_layout.c
-│   └── test_kernel_gso.c
+│   ├── test_kernel_gso.c
+│   ├── test_kernel_txtime.c
+│   ├── test_schedule.c
+│   └── test_sink_loopback.c
 ├── meson.build
 ├── meson_options.txt
 ├── LICENSE

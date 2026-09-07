@@ -17,6 +17,16 @@ typedef struct
   GtkWidget *port_spin;
   GtkWidget *mode_combo;
   GtkWidget *batch_spin;
+  GtkWidget *aggregation_combo;
+  GtkWidget *batch_delay_spin;
+  GtkWidget *queue_limit_spin;
+  GtkWidget *backpressure_combo;
+  GtkWidget *pacing_combo;
+  GtkWidget *pacing_rate_spin;
+  GtkWidget *pacing_lead_spin;
+  GtkWidget *pacing_horizon_spin;
+  GtkWidget *late_policy_combo;
+  GtkWidget *rtp_aware_check;
   GtkWidget *fallback_check;
   GtkWidget *start_button;
   GtkWidget *stop_button;
@@ -31,6 +41,14 @@ typedef struct
   GtkWidget *gso_support_label;
   GtkWidget *gso_batches_label;
   GtkWidget *fallbacks_label;
+  GtkWidget *queued_label;
+  GtkWidget *queue_high_label;
+  GtkWidget *dropped_label;
+  GtkWidget *late_label;
+  GtkWidget *txtime_support_label;
+  GtkWidget *pacing_fallbacks_label;
+  GtkWidget *rtp_packets_label;
+  GtkWidget *rtp_gaps_label;
 
   GstElement *pipeline;
   GstElement *sink;
@@ -81,6 +99,16 @@ set_controls_running (DemoApp * app, gboolean running)
   gtk_widget_set_sensitive (app->port_spin, !running);
   gtk_widget_set_sensitive (app->mode_combo, !running);
   gtk_widget_set_sensitive (app->batch_spin, !running);
+  gtk_widget_set_sensitive (app->aggregation_combo, !running);
+  gtk_widget_set_sensitive (app->batch_delay_spin, !running);
+  gtk_widget_set_sensitive (app->queue_limit_spin, !running);
+  gtk_widget_set_sensitive (app->backpressure_combo, !running);
+  gtk_widget_set_sensitive (app->pacing_combo, !running);
+  gtk_widget_set_sensitive (app->pacing_rate_spin, !running);
+  gtk_widget_set_sensitive (app->pacing_lead_spin, !running);
+  gtk_widget_set_sensitive (app->pacing_horizon_spin, !running);
+  gtk_widget_set_sensitive (app->late_policy_combo, !running);
+  gtk_widget_set_sensitive (app->rtp_aware_check, !running);
   gtk_widget_set_sensitive (app->fallback_check, !running);
   gtk_widget_set_sensitive (app->start_button, !running);
   gtk_widget_set_sensitive (app->stop_button, running);
@@ -416,7 +444,15 @@ update_statistics (gpointer user_data)
   guint64 calls = 0;
   guint64 gso_batches = 0;
   guint64 fallbacks = 0;
+  guint64 queue_high = 0;
+  guint64 dropped = 0;
+  guint64 late = 0;
+  guint64 pacing_fallbacks = 0;
+  guint64 rtp_packets = 0;
+  guint64 rtp_gaps = 0;
+  guint queued = 0;
   gboolean gso_supported = FALSE;
+  gboolean txtime_supported = FALSE;
   gint64 now_us;
   gchar *text;
   gint64 position = GST_CLOCK_TIME_NONE;
@@ -431,7 +467,15 @@ update_statistics (gpointer user_data)
       "system-calls", &calls,
       "gso-supported", &gso_supported,
       "gso-batches", &gso_batches,
-      "fallback-count", &fallbacks, NULL);
+      "fallback-count", &fallbacks,
+      "queued-packets", &queued,
+      "queue-high-watermark", &queue_high,
+      "dropped-packets", &dropped,
+      "late-packets", &late,
+      "txtime-supported", &txtime_supported,
+      "pacing-fallbacks", &pacing_fallbacks,
+      "rtp-packets", &rtp_packets,
+      "rtp-sequence-gaps", &rtp_gaps, NULL);
 
   set_label_uint64 (app->packets_label, packets);
   text = g_format_size (bytes);
@@ -440,8 +484,17 @@ update_statistics (gpointer user_data)
   set_label_uint64 (app->calls_label, calls);
   set_label_uint64 (app->gso_batches_label, gso_batches);
   set_label_uint64 (app->fallbacks_label, fallbacks);
+  set_label_uint64 (app->queued_label, queued);
+  set_label_uint64 (app->queue_high_label, queue_high);
+  set_label_uint64 (app->dropped_label, dropped);
+  set_label_uint64 (app->late_label, late);
+  set_label_uint64 (app->pacing_fallbacks_label, pacing_fallbacks);
+  set_label_uint64 (app->rtp_packets_label, rtp_packets);
+  set_label_uint64 (app->rtp_gaps_label, rtp_gaps);
   gtk_label_set_text (GTK_LABEL (app->gso_support_label),
       gso_supported ? "Available" : "Unavailable");
+  gtk_label_set_text (GTK_LABEL (app->txtime_support_label),
+      txtime_supported ? "Available" : "Unavailable / not requested");
 
   text = g_strdup_printf ("%.2f packets/call",
       calls == 0 ? 0.0 : (gdouble) packets / (gdouble) calls);
@@ -539,14 +592,24 @@ start_pipeline (DemoApp * app)
   const gchar *input_type;
   const gchar *host;
   const gchar *mode;
+  const gchar *aggregation_mode;
+  const gchar *backpressure;
+  const gchar *pacing_mode;
+  const gchar *late_policy;
   const gchar *camera_device;
   guint port;
   guint batch_size;
+  guint batch_delay_us;
+  guint queue_limit;
+  guint pacing_lead_us;
+  guint pacing_horizon_us;
+  guint64 pacing_rate;
   guint camera_width = 1280;
   guint camera_height = 720;
   guint camera_framerate = 30;
   guint camera_bitrate = 4000;
   gboolean fallback;
+  gboolean rtp_aware;
   gboolean source_ready;
   GstBus *bus;
   GstStateChangeReturn state_result;
@@ -592,7 +655,27 @@ start_pipeline (DemoApp * app)
           app->batch_spin));
   fallback = gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (
           app->fallback_check));
+  rtp_aware = gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (
+          app->rtp_aware_check));
   mode = gtk_combo_box_get_active_id (GTK_COMBO_BOX (app->mode_combo));
+  aggregation_mode = gtk_combo_box_get_active_id (GTK_COMBO_BOX (
+          app->aggregation_combo));
+  batch_delay_us = gtk_spin_button_get_value_as_int (GTK_SPIN_BUTTON (
+          app->batch_delay_spin));
+  queue_limit = gtk_spin_button_get_value_as_int (GTK_SPIN_BUTTON (
+          app->queue_limit_spin));
+  backpressure = gtk_combo_box_get_active_id (GTK_COMBO_BOX (
+          app->backpressure_combo));
+  pacing_mode = gtk_combo_box_get_active_id (GTK_COMBO_BOX (
+          app->pacing_combo));
+  pacing_rate = (guint64) (gtk_spin_button_get_value (GTK_SPIN_BUTTON (
+              app->pacing_rate_spin)) * 1000000.0);
+  pacing_lead_us = gtk_spin_button_get_value_as_int (GTK_SPIN_BUTTON (
+          app->pacing_lead_spin));
+  pacing_horizon_us = gtk_spin_button_get_value_as_int (GTK_SPIN_BUTTON (
+          app->pacing_horizon_spin));
+  late_policy = gtk_combo_box_get_active_id (GTK_COMBO_BOX (
+          app->late_policy_combo));
 
   app->pipeline = gst_pipeline_new ("udpgso-demo-sender");
   app->sink = gst_element_factory_make ("udpgsosink", "network-sink");
@@ -616,10 +699,24 @@ start_pipeline (DemoApp * app)
       "host", host,
       "port", port,
       "batch-size", batch_size,
+      "max-batch-delay-us", batch_delay_us,
+      "max-queue-packets", queue_limit,
+      "pacing-rate", pacing_rate,
+      "pacing-lead-time-us", pacing_lead_us,
+      "max-pacing-horizon-us", pacing_horizon_us,
+      "rtp-aware", rtp_aware,
       "fallback", fallback,
       "sync", TRUE, NULL);
   gst_util_set_object_arg (G_OBJECT (app->sink), "io-mode",
       mode != NULL ? mode : "auto");
+  gst_util_set_object_arg (G_OBJECT (app->sink), "aggregation-mode",
+      aggregation_mode != NULL ? aggregation_mode : "bounded");
+  gst_util_set_object_arg (G_OBJECT (app->sink), "backpressure",
+      backpressure != NULL ? backpressure : "block");
+  gst_util_set_object_arg (G_OBJECT (app->sink), "pacing-mode",
+      pacing_mode != NULL ? pacing_mode : "none");
+  gst_util_set_object_arg (G_OBJECT (app->sink), "late-packet-policy",
+      late_policy != NULL ? late_policy : "send");
 
   if (!gst_bin_add (GST_BIN (app->pipeline), app->sink)) {
     gtk_label_set_text (GTK_LABEL (app->status_label),
@@ -664,6 +761,14 @@ start_pipeline (DemoApp * app)
   gtk_label_set_text (GTK_LABEL (app->gso_support_label), "Probing...");
   gtk_label_set_text (GTK_LABEL (app->gso_batches_label), "0");
   gtk_label_set_text (GTK_LABEL (app->fallbacks_label), "0");
+  gtk_label_set_text (GTK_LABEL (app->queued_label), "0");
+  gtk_label_set_text (GTK_LABEL (app->queue_high_label), "0");
+  gtk_label_set_text (GTK_LABEL (app->dropped_label), "0");
+  gtk_label_set_text (GTK_LABEL (app->late_label), "0");
+  gtk_label_set_text (GTK_LABEL (app->txtime_support_label), "Probing...");
+  gtk_label_set_text (GTK_LABEL (app->pacing_fallbacks_label), "0");
+  gtk_label_set_text (GTK_LABEL (app->rtp_packets_label), "0");
+  gtk_label_set_text (GTK_LABEL (app->rtp_gaps_label), "0");
   app->stats_timer_id = g_timeout_add (500, update_statistics, app);
   gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR (app->progress), 0.0);
   gtk_progress_bar_set_text (GTK_PROGRESS_BAR (app->progress), "00:00 / --:--");
@@ -782,6 +887,11 @@ build_ui (DemoApp * app)
   GtkFileFilter *mp4_filter;
   GtkAdjustment *port_adjustment;
   GtkAdjustment *batch_adjustment;
+  GtkAdjustment *batch_delay_adjustment;
+  GtkAdjustment *queue_limit_adjustment;
+  GtkAdjustment *pacing_rate_adjustment;
+  GtkAdjustment *pacing_lead_adjustment;
+  GtkAdjustment *pacing_horizon_adjustment;
   GtkAdjustment *framerate_adjustment;
   GtkAdjustment *bitrate_adjustment;
   GtkWidget *button_box;
@@ -946,10 +1056,106 @@ build_ui (DemoApp * app)
   app->batch_spin = gtk_spin_button_new (batch_adjustment, 1, 0);
   gtk_grid_attach (GTK_GRID (settings), app->batch_spin, 3, 3, 1, 1);
 
+  label = gtk_label_new ("Aggregation");
+  gtk_widget_set_halign (label, GTK_ALIGN_END);
+  gtk_grid_attach (GTK_GRID (settings), label, 0, 4, 1, 1);
+  app->aggregation_combo = gtk_combo_box_text_new ();
+  gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (app->aggregation_combo),
+      "bounded", "Bounded worker queue");
+  gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (app->aggregation_combo),
+      "none", "Synchronous baseline");
+  gtk_combo_box_set_active_id (GTK_COMBO_BOX (app->aggregation_combo),
+      "bounded");
+  gtk_grid_attach (GTK_GRID (settings), app->aggregation_combo, 1, 4, 1, 1);
+
+  label = gtk_label_new ("Max batch delay (µs)");
+  gtk_widget_set_halign (label, GTK_ALIGN_END);
+  gtk_grid_attach (GTK_GRID (settings), label, 2, 4, 1, 1);
+  batch_delay_adjustment = gtk_adjustment_new (1000, 0, 1000000, 100, 1000,
+      0);
+  app->batch_delay_spin = gtk_spin_button_new (batch_delay_adjustment, 1, 0);
+  gtk_grid_attach (GTK_GRID (settings), app->batch_delay_spin, 3, 4, 1, 1);
+
+  label = gtk_label_new ("Queue limit (packets)");
+  gtk_widget_set_halign (label, GTK_ALIGN_END);
+  gtk_grid_attach (GTK_GRID (settings), label, 0, 5, 1, 1);
+  queue_limit_adjustment = gtk_adjustment_new (256, 1, 65536, 1, 64, 0);
+  app->queue_limit_spin = gtk_spin_button_new (queue_limit_adjustment, 1, 0);
+  gtk_grid_attach (GTK_GRID (settings), app->queue_limit_spin, 1, 5, 1, 1);
+
+  label = gtk_label_new ("Backpressure");
+  gtk_widget_set_halign (label, GTK_ALIGN_END);
+  gtk_grid_attach (GTK_GRID (settings), label, 2, 5, 1, 1);
+  app->backpressure_combo = gtk_combo_box_text_new ();
+  gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (app->backpressure_combo),
+      "block", "Block producer");
+  gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (app->backpressure_combo),
+      "drop-newest", "Drop newest");
+  gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (app->backpressure_combo),
+      "error", "Raise error");
+  gtk_combo_box_set_active_id (GTK_COMBO_BOX (app->backpressure_combo),
+      "block");
+  gtk_grid_attach (GTK_GRID (settings), app->backpressure_combo, 3, 5, 1, 1);
+
+  label = gtk_label_new ("Pacing backend");
+  gtk_widget_set_halign (label, GTK_ALIGN_END);
+  gtk_grid_attach (GTK_GRID (settings), label, 0, 6, 1, 1);
+  app->pacing_combo = gtk_combo_box_text_new ();
+  gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (app->pacing_combo), "none",
+      "Disabled");
+  gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (app->pacing_combo), "auto",
+      "SO_TXTIME, then userspace");
+  gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (app->pacing_combo), "txtime",
+      "SO_TXTIME");
+  gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (app->pacing_combo),
+      "userspace", "Userspace timer");
+  gtk_combo_box_set_active_id (GTK_COMBO_BOX (app->pacing_combo), "none");
+  gtk_grid_attach (GTK_GRID (settings), app->pacing_combo, 1, 6, 1, 1);
+
+  label = gtk_label_new ("Pacing rate (Mbit/s)");
+  gtk_widget_set_halign (label, GTK_ALIGN_END);
+  gtk_grid_attach (GTK_GRID (settings), label, 2, 6, 1, 1);
+  pacing_rate_adjustment = gtk_adjustment_new (50, 0.1, 10000, 1, 10, 0);
+  app->pacing_rate_spin = gtk_spin_button_new (pacing_rate_adjustment, 1, 1);
+  gtk_grid_attach (GTK_GRID (settings), app->pacing_rate_spin, 3, 6, 1, 1);
+
+  label = gtk_label_new ("Pacing lead (µs)");
+  gtk_widget_set_halign (label, GTK_ALIGN_END);
+  gtk_grid_attach (GTK_GRID (settings), label, 0, 7, 1, 1);
+  pacing_lead_adjustment = gtk_adjustment_new (2000, 0, 1000000, 100, 1000,
+      0);
+  app->pacing_lead_spin = gtk_spin_button_new (pacing_lead_adjustment, 1, 0);
+  gtk_grid_attach (GTK_GRID (settings), app->pacing_lead_spin, 1, 7, 1, 1);
+
+  label = gtk_label_new ("Late packets");
+  gtk_widget_set_halign (label, GTK_ALIGN_END);
+  gtk_grid_attach (GTK_GRID (settings), label, 2, 7, 1, 1);
+  app->late_policy_combo = gtk_combo_box_text_new ();
+  gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (app->late_policy_combo),
+      "send", "Reschedule and send");
+  gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (app->late_policy_combo),
+      "drop", "Drop");
+  gtk_combo_box_set_active_id (GTK_COMBO_BOX (app->late_policy_combo), "send");
+  gtk_grid_attach (GTK_GRID (settings), app->late_policy_combo, 3, 7, 1, 1);
+
+  label = gtk_label_new ("Kernel horizon (µs)");
+  gtk_widget_set_halign (label, GTK_ALIGN_END);
+  gtk_grid_attach (GTK_GRID (settings), label, 0, 8, 1, 1);
+  pacing_horizon_adjustment = gtk_adjustment_new (100000, 0, 10000000, 1000,
+      10000, 0);
+  app->pacing_horizon_spin = gtk_spin_button_new (pacing_horizon_adjustment,
+      1, 0);
+  gtk_grid_attach (GTK_GRID (settings), app->pacing_horizon_spin, 1, 8, 1, 1);
+
+  app->rtp_aware_check = gtk_check_button_new_with_label (
+      "RTP-aware frame boundaries and sequence statistics");
+  gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (app->rtp_aware_check), TRUE);
+  gtk_grid_attach (GTK_GRID (settings), app->rtp_aware_check, 1, 9, 3, 1);
+
   app->fallback_check = gtk_check_button_new_with_label (
-      "Fall back to sendmmsg when GSO is unavailable");
+      "Enable safe GSO and pacing fallbacks");
   gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (app->fallback_check), TRUE);
-  gtk_grid_attach (GTK_GRID (settings), app->fallback_check, 1, 4, 3, 1);
+  gtk_grid_attach (GTK_GRID (settings), app->fallback_check, 1, 10, 3, 1);
 
   button_box = gtk_button_box_new (GTK_ORIENTATION_HORIZONTAL);
   gtk_button_box_set_layout (GTK_BUTTON_BOX (button_box), GTK_BUTTONBOX_END);
@@ -995,6 +1201,14 @@ build_ui (DemoApp * app)
   app->gso_support_label = make_value_label ();
   app->gso_batches_label = make_value_label ();
   app->fallbacks_label = make_value_label ();
+  app->queued_label = make_value_label ();
+  app->queue_high_label = make_value_label ();
+  app->dropped_label = make_value_label ();
+  app->late_label = make_value_label ();
+  app->txtime_support_label = make_value_label ();
+  app->pacing_fallbacks_label = make_value_label ();
+  app->rtp_packets_label = make_value_label ();
+  app->rtp_gaps_label = make_value_label ();
   add_grid_row (GTK_GRID (stats), 0, "Packets sent", app->packets_label);
   add_grid_row (GTK_GRID (stats), 1, "Payload bytes", app->bytes_label);
   add_grid_row (GTK_GRID (stats), 2, "Network system calls", app->calls_label);
@@ -1007,15 +1221,30 @@ build_ui (DemoApp * app)
   add_grid_row (GTK_GRID (stats), 6, "Successful GSO batches",
       app->gso_batches_label);
   add_grid_row (GTK_GRID (stats), 7, "GSO fallbacks", app->fallbacks_label);
+  add_grid_row (GTK_GRID (stats), 8, "Currently queued", app->queued_label);
+  add_grid_row (GTK_GRID (stats), 9, "Queue high watermark",
+      app->queue_high_label);
+  add_grid_row (GTK_GRID (stats), 10, "Dropped packets", app->dropped_label);
+  add_grid_row (GTK_GRID (stats), 11, "Late packets", app->late_label);
+  add_grid_row (GTK_GRID (stats), 12, "Kernel SO_TXTIME",
+      app->txtime_support_label);
+  add_grid_row (GTK_GRID (stats), 13, "Pacing fallbacks",
+      app->pacing_fallbacks_label);
+  add_grid_row (GTK_GRID (stats), 14, "Validated RTP packets",
+      app->rtp_packets_label);
+  add_grid_row (GTK_GRID (stats), 15, "RTP sequence gaps",
+      app->rtp_gaps_label);
 
   gso_note = gtk_label_new (
-      "A zero GSO-batch count means upstream delivered individual RTP buffers; "
-      "it does not mean that video transmission failed.");
+      "Bounded aggregation combines ordinary RTP buffers only for kernel "
+      "submission; every input buffer remains one UDP datagram. Per-packet "
+      "pacing uses sendmmsg instead of GSO so each packet can have its own "
+      "transmission time.");
   gtk_label_set_line_wrap (GTK_LABEL (gso_note), TRUE);
   gtk_widget_set_halign (gso_note, GTK_ALIGN_START);
   gtk_style_context_add_class (gtk_widget_get_style_context (gso_note),
       "dim-label");
-  gtk_grid_attach (GTK_GRID (stats), gso_note, 0, 8, 2, 1);
+  gtk_grid_attach (GTK_GRID (stats), gso_note, 0, 16, 2, 1);
 
   g_signal_connect (app->start_button, "clicked",
       G_CALLBACK (on_start_clicked), app);
