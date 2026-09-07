@@ -21,7 +21,7 @@ next milestone; it is not implemented in this version.
 | Demo inputs | H.264/H.265 video in an MP4 file; raw or MJPEG USB camera video |
 | Demo output | RTP/H.264 or RTP/H.265 over UDP, payload type 96, MTU 1200 |
 | Test coverage | Pure-C batch-layout tests and a Linux kernel UDP GSO loopback test |
-| License | LGPL-2.1-or-later |
+| License | BSD-3-Clause |
 
 The sink preserves datagram boundaries. It never splits a single
 `GstBuffer`, because an arbitrary encoded buffer is not necessarily a set of
@@ -370,10 +370,14 @@ UDP GSO superpacket.
 │   └── test_kernel_gso.c
 ├── meson.build
 ├── meson_options.txt
+├── LICENSE
 └── README.md
 ```
 
 ## License
 
-The Meson project and source files are licensed under **BSD-3-Clause**.
+The complete project is licensed under the **BSD 3-Clause License**. See
+[`LICENSE`](LICENSE) for the full terms. Source files use the SPDX identifier
+`BSD-3-Clause`; the GStreamer plugin descriptor uses its required `BSD`
+metadata value.
 
