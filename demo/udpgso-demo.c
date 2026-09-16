@@ -596,7 +596,7 @@ start_pipeline (DemoApp * app)
   const gchar *backpressure;
   const gchar *pacing_mode;
   const gchar *late_policy;
-  const gchar *camera_device;
+  const gchar *camera_device = NULL;
   guint port;
   guint batch_size;
   guint batch_delay_us;
@@ -610,12 +610,14 @@ start_pipeline (DemoApp * app)
   guint camera_bitrate = 4000;
   gboolean fallback;
   gboolean rtp_aware;
+  gboolean camera_input;
   gboolean source_ready;
   GstBus *bus;
   GstStateChangeReturn state_result;
 
   input_type = gtk_combo_box_get_active_id (GTK_COMBO_BOX (app->input_combo));
-  if (g_strcmp0 (input_type, "camera") == 0) {
+  camera_input = g_strcmp0 (input_type, "camera") == 0;
+  if (camera_input) {
     camera_device = gtk_entry_get_text (GTK_ENTRY (app->camera_device_entry));
     if (camera_device == NULL || *camera_device == '\0') {
       gtk_label_set_text (GTK_LABEL (app->status_label),
@@ -731,7 +733,7 @@ start_pipeline (DemoApp * app)
 
   g_atomic_int_set (&app->video_linked, 0);
   app->camera_queue = NULL;
-  if (g_strcmp0 (input_type, "camera") == 0) {
+  if (camera_input) {
     source_ready = build_camera_source (app, camera_device, camera_width,
         camera_height, camera_framerate, camera_bitrate);
   } else {
