@@ -6,4 +6,3 @@ executable(
   dependencies: [gst_dep, gtk_dep],
   install: true,
 )
-

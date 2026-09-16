@@ -146,4 +146,3 @@ out:
     close (receiver);
   return result;
 }
-

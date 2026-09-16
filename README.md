@@ -127,14 +127,15 @@ The test suite contains:
   handling, zero-length entries, and invalid input;
 - `schedule`: verifies integer pacing intervals, rounding, lead time, schedule
   reset, and RTP frame-boundary decisions;
-- `kernel-gso`: sends eight 1200-byte segments through `UDP_SEGMENT` on
-  loopback and verifies that eight independent datagrams arrive. It is skipped
+- `kernel-gso`: sends fifty-four 1200-byte segments through `UDP_SEGMENT` on
+  loopback and verifies that 54 independent datagrams arrive. It is skipped
   when the running kernel does not support UDP GSO;
 - `kernel-txtime`: verifies the `SO_TXTIME`/`SCM_TXTIME` userspace ABI and is
   skipped when the active kernel or queueing setup cannot accept it;
-- `sink-loopback`: pushes individual RTP-like buffers through `appsrc`, waits
-  for sink-side EOS draining, receives every datagram, and checks transport and
-  RTP counters.
+- `sink-loopback`: pushes 64 individual RTP-like buffers through `appsrc`,
+  verifies that the oversized candidate batch is split safely, waits for
+  sink-side EOS draining, receives every datagram, and checks transport and RTP
+  counters.
 
 Inspect the uninstalled element from the project root:
 
@@ -300,6 +301,11 @@ All writable custom properties are mutable while the element is in `NULL` or
 
 `gso-min-segments` must not exceed `gso-max-segments`. `pacing-rate` must be
 non-zero whenever pacing is enabled.
+
+The effective GSO run is also capped so its aggregate payload does not exceed
+65507 bytes. For 1200-byte RTP packets this permits at most 54 segments
+(`54 × 1200 = 64800`); configuring 64 does not produce an oversized kernel
+submission.
 
 Read-only statistics:
 
@@ -481,7 +487,6 @@ from a capture.
 
 ```text
 .
-├── .github/workflows/ci.yml
 ├── bench/
 │   ├── meson.build
 │   └── udpgso-benchmark.c
@@ -517,4 +522,3 @@ The complete project is licensed under the **BSD 3-Clause License**. See
 [`LICENSE`](LICENSE) for the full terms. Source files use the SPDX identifier
 `BSD-3-Clause`; the GStreamer plugin descriptor uses its required `BSD`
 metadata value.
-

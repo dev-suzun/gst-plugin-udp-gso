@@ -28,3 +28,17 @@ udpgso_equal_size_run (const size_t *sizes,
   return run;
 }
 
+size_t
+udpgso_limit_segments_by_payload (size_t segment_size,
+                                  size_t max_segments,
+                                  size_t max_payload_size)
+{
+  size_t payload_segments;
+
+  if (segment_size == 0 || max_segments == 0 ||
+      segment_size > max_payload_size)
+    return 0;
+
+  payload_segments = max_payload_size / segment_size;
+  return payload_segments < max_segments ? payload_segments : max_segments;
+}

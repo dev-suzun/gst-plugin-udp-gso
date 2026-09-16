@@ -15,3 +15,10 @@ size_t udpgso_equal_size_run (const size_t *sizes,
                               size_t start,
                               size_t max_segments);
 
+/*
+ * Limit a GSO run so its aggregate payload does not exceed @max_payload_size.
+ * A zero segment size, zero limit, or oversized individual segment returns 0.
+ */
+size_t udpgso_limit_segments_by_payload (size_t segment_size,
+                                         size_t max_segments,
+                                         size_t max_payload_size);

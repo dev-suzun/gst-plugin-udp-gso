@@ -71,4 +71,3 @@ udpgso_rtp_starts_new_batch (const UdpGsoRtpInfo *previous,
 
   return previous->marker || previous->timestamp != next->timestamp;
 }
-

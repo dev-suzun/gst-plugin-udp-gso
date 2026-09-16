@@ -25,4 +25,3 @@ GST_PLUGIN_DEFINE (
     "BSD",
     "gst-plugin-udp-gso",
     "https://gstreamer.freedesktop.org/")
-

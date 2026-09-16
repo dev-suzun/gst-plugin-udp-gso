@@ -40,4 +40,3 @@ uint64_t udpgso_schedule_next (UdpGsoSchedule *schedule,
 /* True when adding @next would cross a validated RTP frame boundary. */
 bool udpgso_rtp_starts_new_batch (const UdpGsoRtpInfo *previous,
                                   const UdpGsoRtpInfo *next);
-

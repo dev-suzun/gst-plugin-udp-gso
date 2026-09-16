@@ -33,4 +33,3 @@ sink_loopback_test = executable(
   c_args: ['-D_GNU_SOURCE'],
 )
 test('sink-loopback', sink_loopback_test, timeout: 10)
-

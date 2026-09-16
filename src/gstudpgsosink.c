@@ -40,6 +40,8 @@
 #define DEFAULT_GSO_MIN_SEGMENTS 4
 #define DEFAULT_GSO_MAX_SEGMENTS 32
 #define MAX_GSO_SEGMENTS 64
+/* Conservative maximum UDP payload without IPv6 jumbograms. */
+#define MAX_GSO_PAYLOAD_SIZE 65507
 #define DEFAULT_MAX_QUEUE_PACKETS 256
 #define DEFAULT_MAX_BATCH_DELAY_US 1000
 #define DEFAULT_PACING_RATE UINT64_C (50000000)
@@ -917,6 +919,11 @@ gst_udp_gso_sink_send_with_mode (GstUdpGsoSink *self,
       }
       break;
     }
+
+    available = udpgso_limit_segments_by_payload (packets[offset].size,
+        available, MAX_GSO_PAYLOAD_SIZE);
+    if (available == 0)
+      available = 1;
 
     run = udpgso_equal_size_run (sizes, count, offset, available);
 

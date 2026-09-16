@@ -11,7 +11,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#define PACKET_COUNT 8
+#define PACKET_COUNT 64
 #define PACKET_SIZE 1200
 
 static GstBuffer *
@@ -81,6 +81,7 @@ test_individual_buffers_are_batched (void)
       "host", "127.0.0.1",
       "port", port,
       "batch-size", PACKET_COUNT,
+      "gso-max-segments", PACKET_COUNT,
       "max-batch-delay-us", 50000,
       "rtp-aware", TRUE,
       "sync", FALSE,
@@ -154,4 +155,3 @@ main (int argc, char **argv)
       test_individual_buffers_are_batched);
   return g_test_run ();
 }
-
