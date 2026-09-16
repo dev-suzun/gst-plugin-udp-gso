@@ -221,4 +221,3 @@ out_options:
   g_free (pacing_mode);
   return success ? 0 : 1;
 }
-

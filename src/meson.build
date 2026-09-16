@@ -17,4 +17,3 @@ shared_library(
   install: true,
   install_dir: gst_plugins_dir,
 )
-

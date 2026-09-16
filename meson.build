@@ -40,4 +40,3 @@ if gtk_dep.found()
 else
   message('GTK 3 development files not found; udpgso-demo will not be built')
 endif
-

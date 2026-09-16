@@ -25,7 +25,7 @@
 #endif
 
 #define SEGMENT_SIZE 1200
-#define SEGMENT_COUNT 8
+#define SEGMENT_COUNT 54
 
 static int
 fail (const char *message)
@@ -134,4 +134,3 @@ out:
     close (receiver);
   return result;
 }
-

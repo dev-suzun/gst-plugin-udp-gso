@@ -11,4 +11,3 @@ G_DECLARE_FINAL_TYPE (GstUdpGsoSink, gst_udp_gso_sink, GST, UDP_GSO_SINK,
     GstBaseSink)
 
 G_END_DECLS
-
